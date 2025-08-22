@@ -2,7 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import time
+import json
 from threading import Thread
+import os
+
+STATE_FILE = "bot_state.json"
 
 # ----------------------------
 # 1️⃣ Nastavení stránky
@@ -10,34 +14,55 @@ from threading import Thread
 st.set_page_config(page_title="BTC/USDT Grid Bot", layout="wide")
 st.markdown("""
 # 💰 Grid Bot – Simulace / Demo / Live
-Grid bot pro BTC/USDT s vizuálním zobrazením a live logem.
+Grid bot pro BTC/USDT s vizuálním zobrazením cenových hladin.
 """)
 
 # ----------------------------
-# 2️⃣ Inicializace st.session_state
+# 2️⃣ Načtení / inicializace stavu
 # ----------------------------
-if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = False
-
-if 'trade_history' not in st.session_state:
-    st.session_state.trade_history = pd.DataFrame(columns=['Time','Grid','Type','Price','Amount','Profit','Cumulative Profit'])
-
-if 'grid_settings' not in st.session_state:
+def load_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                data = json.load(f)
+            # rekonstruujeme DataFrame
+            for g in data['grid_settings']:
+                g['closed_positions'] = pd.DataFrame(g['closed_positions'])
+            data['trade_history'] = pd.DataFrame(data['trade_history'])
+            return data
+        except:
+            pass
+    # Výchozí stav
     default_grids = [
-        {'grid_percent':0.0025, 'invest_percent':0.0025, 'open_positions':[], 'closed_positions':pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit']), 'last_price':50000},
-        {'grid_percent':0.01, 'invest_percent':0.01, 'open_positions':[], 'closed_positions':pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit']), 'last_price':50000},
-        {'grid_percent':0.005, 'invest_percent':0.005, 'open_positions':[], 'closed_positions':pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit']), 'last_price':50000}
+        {'grid_percent':0.0025, 'invest_percent':0.0025, 'open_positions':[], 
+         'closed_positions':pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit']), 'last_price':50000},
+        {'grid_percent':0.01, 'invest_percent':0.01, 'open_positions':[], 
+         'closed_positions':pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit']), 'last_price':50000},
+        {'grid_percent':0.005, 'invest_percent':0.005, 'open_positions':[], 
+         'closed_positions':pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit']), 'last_price':50000}
     ]
-    st.session_state.grid_settings = default_grids
+    return {
+        'bot_running': False,
+        'trade_history': pd.DataFrame(columns=['Time','Grid','Type','Price','Amount','Profit','Cumulative Profit']),
+        'grid_settings': default_grids,
+        'timestamps': [],
+        'profits': [],
+        'live_log': []
+    }
 
-if 'timestamps' not in st.session_state:
-    st.session_state.timestamps = []
+def save_state():
+    data = st.session_state.to_dict()
+    for g in data['grid_settings']:
+        g['closed_positions'] = g['closed_positions'].to_dict(orient='records')
+    data['trade_history'] = st.session_state.trade_history.to_dict(orient='records')
+    with open(STATE_FILE, "w") as f:
+        json.dump(data, f, default=str)
 
-if 'profits' not in st.session_state:
-    st.session_state.profits = []
-
-if 'live_log' not in st.session_state:
-    st.session_state.live_log = []
+if 'loaded' not in st.session_state:
+    state = load_state()
+    for k,v in state.items():
+        st.session_state[k] = v
+    st.session_state.loaded = True
 
 # ----------------------------
 # 3️⃣ Sidebar – volba režimu a API
@@ -72,7 +97,9 @@ if mode != "Simulace":
 capital = st.sidebar.number_input("Celkový kapitál (USDT)", value=50.0, min_value=1.0)
 check_interval = st.sidebar.slider("Interval (s)", 0.1, 5.0, 0.5, 0.1)
 
-st.sidebar.subheader("Gridy – Dynamické %")
+st.sidebar.subheader("Gridy – Dynamické % / Cenové hladiny")
+btc_price_for_calc = st.sidebar.number_input("Aktuální cena BTC (pro vizualizaci)", value=50000.0)
+
 for i, grid in enumerate(st.session_state.grid_settings):
     st.sidebar.markdown(f"**Grid {i+1}**")
     grid['grid_percent'] = st.sidebar.slider(
@@ -81,6 +108,8 @@ for i, grid in enumerate(st.session_state.grid_settings):
     grid['invest_percent'] = st.sidebar.slider(
         f"Invest % kapitálu ({i+1})", 0.1, 5.0, grid['invest_percent']*100, 0.05
     ) / 100
+    grid['last_price'] = btc_price_for_calc
+    grid['price_levels'] = [round(btc_price_for_calc*(1+grid['grid_percent']*i),2) for i in range(-5,6)]  # 5 hladin nahoru/dolu
 
 # ----------------------------
 # 5️⃣ Funkce pro BUY/SELL
@@ -93,6 +122,7 @@ def buy(amount, price, grid_idx):
         pd.Timestamp.now(), f"Grid {grid_idx+1}", 'BUY', price, amount, 0, profit_cum
     ]
     st.session_state.live_log.append(f"{pd.Timestamp.now()} – Grid {grid_idx+1} – BUY @ {price:.2f}")
+    save_state()
 
 def sell(amount, price, grid_idx):
     grid = st.session_state.grid_settings[grid_idx]
@@ -111,18 +141,19 @@ def sell(amount, price, grid_idx):
             pd.Timestamp.now(), f"Grid {grid_idx+1}", 'SELL', price, amount, profit, profit_cum
         ]
         st.session_state.live_log.append(f"{pd.Timestamp.now()} – Grid {grid_idx+1} – SELL @ {price:.2f} – Profit {profit:.4f}")
+        save_state()
 
 # ----------------------------
 # 6️⃣ Hlavní bot loop
 # ----------------------------
 def bot_loop():
     session = None
-    if mode != "Simulace":
+    if mode != "Simulace" and api_valid:
         from pybit.unified_trading import HTTP
         session = HTTP(api_key=api_key, api_secret=api_secret, testnet=testnet)
 
     while st.session_state.bot_running:
-        if mode == "Simulace":
+        if mode == "Simulace" or not api_valid:
             price = st.session_state.grid_settings[0]['last_price'] * (1 + np.random.normal(0,0.001))
         else:
             try:
@@ -143,6 +174,7 @@ def bot_loop():
 
         st.session_state.timestamps.append(time.time())
         st.session_state.profits.append(sum([g['closed_positions']['Profit'].sum() for g in st.session_state.grid_settings]))
+        save_state()
         time.sleep(check_interval)
 
 # ----------------------------
@@ -163,7 +195,7 @@ with col2:
         st.session_state.bot_running = False
 
 # ----------------------------
-# 8️⃣ Výstupy – tabulky, grafy, indikátory
+# 8️⃣ Výstupy – tabulky, grafy, cenové hladiny
 # ----------------------------
 st.subheader("📊 Kumulativní zisk všech gridů")
 if st.session_state.profits:
@@ -187,6 +219,11 @@ for idx, grid in enumerate(st.session_state.grid_settings):
         st.dataframe(open_df)
     else:
         st.write("Žádné otevřené pozice")
+
+st.subheader("💹 Cenové hladiny gridů")
+for idx, grid in enumerate(st.session_state.grid_settings):
+    st.markdown(f"**Grid {idx+1}** – Cenové hladiny podle nastaveného grid %")
+    st.write(grid['price_levels'])
 
 st.subheader("📝 Live log")
 for log in st.session_state.live_log[-10:]:
