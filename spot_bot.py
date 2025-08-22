@@ -178,4 +178,16 @@ st.dataframe(st.session_state.trade_history.tail(10))
 
 st.subheader("🔹 Otevřené pozice podle gridů")
 for idx, grid in enumerate(st.session_state.grid_settings):
-    st.markdown(f"**Grid {idx+1} – {len(grid['open_positions'])} otevřených pozic
+    st.markdown(f"**Grid {idx+1} – {len(grid['open_positions'])} otevřených pozic**")
+    if grid['open_positions']:
+        open_df = pd.DataFrame({
+            'Buy Price': grid['open_positions'],
+            'Amount': [capital*grid['invest_percent']] * len(grid['open_positions'])
+        })
+        st.dataframe(open_df)
+    else:
+        st.write("Žádné otevřené pozice")
+
+st.subheader("📝 Live log")
+for log in st.session_state.live_log[-10:]:
+    st.text(log)
