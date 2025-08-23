@@ -1,7 +1,7 @@
 import streamlit as st
-import matplotlib.pyplot as plt
+import pandas as pd
 
-st.title("💹 Futures Kalkulačka s pákou a grafem")
+st.title("💹 Futures Kalkulačka s pákou (Streamlit grafika)")
 
 # --- Uživatelský vstup ---
 capital = st.number_input("Celkový kapitál (USDT)", value=100.0, step=1.0)
@@ -17,15 +17,12 @@ target_capital_percent = st.number_input("Cílový profit (% z celého kapitálu
 investment = investment_percent / 100 * capital
 position_size = investment * leverage
 
-# TP a SL ceny
 tp_price = entry_price * (1 + tp_percent / 100)
 sl_price = entry_price * (1 - sl_percent / 100)
 
-# Profit/Loss při dosažení TP/SL
 profit_tp = position_size * (tp_price - entry_price) / entry_price
 loss_sl = position_size * (sl_price - entry_price) / entry_price
 
-# Potřebný % pohyb pro cílový zisk
 required_move_percent = target_capital_percent / 100 * capital / position_size * 100
 required_price_up = entry_price * (1 + required_move_percent / 100)
 required_price_down = entry_price * (1 - required_move_percent / 100)
@@ -41,16 +38,15 @@ st.write(f"Ztráta při dosažení SL: **{loss_sl:.2f} USDT**")
 st.write(f"Potřebný % pohyb ceny pro cílový profit {target_capital_percent}% kapitálu: **{required_move_percent:.2f}%**")
 st.write(f"Cena pro dosažení cílového profitu: **{required_price_up:.2f} USDT** (nahoru) / **{required_price_down:.2f} USDT** (dolů)")
 
-# --- Graf ---
-fig, ax = plt.subplots(figsize=(8,4))
-ax.axvline(entry_price, color='blue', linestyle='--', label='Vstupní cena')
-ax.axvline(tp_price, color='green', linestyle='--', label='Take Profit')
-ax.axvline(sl_price, color='red', linestyle='--', label='Stop Loss')
-ax.axvline(required_price_up, color='purple', linestyle='-.', label='Požadovaný zisk nahoru')
-ax.axvline(required_price_down, color='orange', linestyle='-.', label='Požadovaný zisk dolů')
+# --- Vizualizace ---
+st.subheader("📈 Cenové hladiny")
+levels = {
+    "Stop Loss": sl_price,
+    "Vstupní cena": entry_price,
+    "Take Profit": tp_price,
+    "Požadovaný zisk nahoru": required_price_up,
+    "Požadovaný zisk dolů": required_price_down
+}
 
-ax.set_xlabel('Cena (USDT)')
-ax.set_ylabel('Referenční')
-ax.set_title('📈 Cenové hladiny TP / SL / Požadovaný zisk')
-ax.legend()
-st.pyplot(fig)
+df_levels = pd.DataFrame(list(levels.items()), columns=["Level", "Cena"])
+st.bar_chart(data=df_levels.set_index("Level"))
