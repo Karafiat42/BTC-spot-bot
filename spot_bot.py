@@ -1,12 +1,13 @@
 import streamlit as st
-from binance.client import Client
 import pandas as pd
 import numpy as np
-import time
-import os
 from datetime import datetime, timedelta
+import os
+from binance.client import Client
+from binance import ThreadedWebsocketManager, ThreadedDepthCacheManager
 
-st.title("💹 Binance Spot Grid Bot (Demo + Live)")
+st.set_page_config(page_title="Binance Spot Bot", layout="wide")
+st.title("💹 Binance Spot Bot (Demo + Live)")
 
 # --- Režim ---
 mode = st.radio("Režim bota", ["Demo", "Live (API)"])
@@ -28,7 +29,7 @@ investment_percent = st.number_input("Investice na jednu pozici (% kapitálu)", 
 buy_drop_percent = st.number_input("Pokles ceny pro nákup (%)", value=0.25, step=0.01)
 tp_percent = st.number_input("Take Profit (%)", value=0.25, step=0.01)
 sl_percent = st.number_input("Stop Loss (%)", value=0.25, step=0.01)
-update_interval = st.number_input("Interval kontroly ceny (s)", value=1, step=1)
+refresh_interval = st.number_input("Interval refresh (s)", value=5, step=1)
 
 # --- Cesty k CSV ---
 open_csv = f"open_positions_{symbol}.csv"
@@ -51,97 +52,83 @@ if os.path.exists(equity_csv):
 else:
     equity_history = pd.DataFrame(columns=['Time','Equity'])
 
-# --- Funkce pro historická data demo ---
-def get_historical_prices(symbol, interval='1m', lookback='1 day'):
-    """
-    Vrátí historická data BTC pro demo režim.
-    """
+# --- Demo data ---
+def get_demo_prices(symbol, interval='1m', lookback='1 day'):
+    # Vygeneruje historická data BTC pro demo
     client = Client()
     klines = client.get_historical_klines(symbol, interval, lookback)
     prices = [float(k[4]) for k in klines]  # Close price
     return prices
 
-# --- Start bota ---
-if st.button("Spustit bota"):
+if 'demo_prices' not in st.session_state:
+    st.session_state.demo_prices = get_demo_prices(symbol)
+    st.session_state.price_idx = 0
+    st.session_state.last_buy_price = None
+    st.session_state.current_capital = capital
 
-    st.success(f"Bot spuštěn! Režim: {mode}")
-    current_capital = capital
-    last_buy_price = None
+# --- Spuštění bota ---
+if st.button("Aktualizovat bot"):
 
-    # --- Demo: načtení historických cen ---
     if mode == "Demo":
-        price_list = get_historical_prices(symbol)
-        price_index = 0
-        total_prices = len(price_list)
-
+        price_list = st.session_state.demo_prices
+        price_idx = st.session_state.price_idx
+        price = price_list[price_idx]
+        st.session_state.price_idx = (price_idx + 1) % len(price_list)
     else:
         client = Client(api_key, api_secret)
+        ticker = client.get_symbol_ticker(symbol=symbol)
+        price = float(ticker['price'])
 
-    while True:
-        try:
-            # --- Získání ceny ---
-            if mode == "Demo":
-                price = price_list[price_index]
-                price_index = (price_index + 1) % total_prices
-            else:
-                ticker = client.get_symbol_ticker(symbol=symbol)
-                price = float(ticker['price'])
+    st.write(f"Aktuální cena: {price:.2f} USDT")
 
-            st.write(f"Aktuální cena: {price} USDT")
+    # --- Nákup ---
+    last_buy = st.session_state.last_buy_price
+    if last_buy is None or price <= last_buy * (1 - buy_drop_percent/100):
+        amount = st.session_state.current_capital * (investment_percent/100) / price
+        st.session_state.last_buy_price = price
+        new_pos = pd.DataFrame([{
+            'Time': pd.Timestamp.now(),
+            'Buy Price': price,
+            'Amount': amount
+        }])
+        open_positions = pd.concat([open_positions, new_pos], ignore_index=True)
+        st.write(f"Nákup: {amount:.6f} {symbol} za {price:.2f} USDT")
 
-            # --- Nákup ---
-            if last_buy_price is None or price <= last_buy_price * (1 - buy_drop_percent/100):
-                amount = current_capital * (investment_percent/100) / price
-                last_buy_price = price
-                new_pos = pd.DataFrame([{
-                    'Time': pd.Timestamp.now(),
-                    'Buy Price': price,
-                    'Amount': amount
-                }])
-                open_positions = pd.concat([open_positions, new_pos], ignore_index=True)
-                st.write(f"Nákup: {amount:.6f} {symbol} za {price} USDT")
+    # --- Prodej / SL ---
+    for idx, row in open_positions.iterrows():
+        # Take Profit
+        if price >= row['Buy Price'] * (1 + tp_percent/100):
+            profit = row['Amount'] * (price - row['Buy Price'])
+            st.session_state.current_capital += profit
+            closed_positions = pd.concat([closed_positions, pd.DataFrame([{
+                'Time': pd.Timestamp.now(),
+                'Buy Price': row['Buy Price'],
+                'Sell Price': price,
+                'Amount': row['Amount'],
+                'Profit': profit
+            }])], ignore_index=True)
+            open_positions.drop(idx, inplace=True)
+            st.write(f"Prodej (TP): Profit {profit:.2f} USDT")
+        # Stop Loss
+        elif price <= row['Buy Price'] * (1 - sl_percent/100):
+            loss = row['Amount'] * (price - row['Buy Price'])
+            st.session_state.current_capital += row['Amount']*price
+            closed_positions = pd.concat([closed_positions, pd.DataFrame([{
+                'Time': pd.Timestamp.now(),
+                'Buy Price': row['Buy Price'],
+                'Sell Price': price,
+                'Amount': row['Amount'],
+                'Profit': loss
+            }])], ignore_index=True)
+            open_positions.drop(idx, inplace=True)
+            st.write(f"Prodej (SL): Ztráta {loss:.2f} USDT")
 
-            # --- Prodej / Stop Loss ---
-            for idx, row in open_positions.iterrows():
-                # Take Profit
-                if price >= row['Buy Price'] * (1 + tp_percent/100):
-                    profit = row['Amount'] * (price - row['Buy Price'])
-                    current_capital += profit
-                    closed_positions = pd.concat([closed_positions, pd.DataFrame([{
-                        'Time': pd.Timestamp.now(),
-                        'Buy Price': row['Buy Price'],
-                        'Sell Price': price,
-                        'Amount': row['Amount'],
-                        'Profit': profit
-                    }])], ignore_index=True)
-                    open_positions.drop(idx, inplace=True)
-                    st.write(f"Prodej (TP): {row['Amount']:.6f} {symbol} za {price} USDT, Profit: {profit:.2f} USDT")
-                # Stop Loss
-                elif price <= row['Buy Price'] * (1 - sl_percent/100):
-                    loss = row['Amount'] * (price - row['Buy Price'])
-                    current_capital += row['Amount']*price
-                    closed_positions = pd.concat([closed_positions, pd.DataFrame([{
-                        'Time': pd.Timestamp.now(),
-                        'Buy Price': row['Buy Price'],
-                        'Sell Price': price,
-                        'Amount': row['Amount'],
-                        'Profit': loss
-                    }])], ignore_index=True)
-                    open_positions.drop(idx, inplace=True)
-                    st.write(f"Prodej (SL): {row['Amount']:.6f} {symbol} za {price} USDT, Ztráta: {loss:.2f} USDT")
+    # --- Equity ---
+    total_equity = st.session_state.current_capital + open_positions['Amount'].sum()*price
+    equity_history = pd.concat([equity_history, pd.DataFrame([{'Time': pd.Timestamp.now(),'Equity': total_equity}])], ignore_index=True)
+    st.line_chart(equity_history.set_index('Time'))
 
-            # --- Equity ---
-            total_equity = current_capital + open_positions['Amount'].sum()*price
-            equity_history = pd.concat([equity_history, pd.DataFrame([{'Time': pd.Timestamp.now(),'Equity': total_equity}])], ignore_index=True)
-            st.line_chart(equity_history.set_index('Time'))
-
-            # --- Ukládání do CSV ---
-            open_positions.to_csv(open_csv, index=False)
-            closed_positions.to_csv(closed_csv, index=False)
-            equity_history.to_csv(equity_csv, index=False)
-
-            time.sleep(update_interval)
-
-        except Exception as e:
-            st.error(f"Chyba: {e}")
-            break
+    # --- Ukládání ---
+    open_positions.to_csv(open_csv, index=False)
+    closed_positions.to_csv(closed_csv, index=False)
+    equity_history.to_csv(equity_csv, index=False)
