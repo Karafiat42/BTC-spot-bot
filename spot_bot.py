@@ -1,27 +1,29 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
-from binance.client import Client
-from binance import ThreadedWebsocketManager, ThreadedDepthCacheManager
 
 st.set_page_config(page_title="Binance Spot Bot", layout="wide")
 st.title("💹 Binance Spot Bot (Demo + Live)")
 
-# --- Režim ---
+# --- Režim bota ---
 mode = st.radio("Režim bota", ["Demo", "Live (API)"])
 
-api_key = ""
-api_secret = ""
 if mode == "Live (API)":
+    try:
+        from binance.client import Client
+    except ImportError:
+        st.error("Pro live mód musíš mít nainstalovanou knihovnu python-binance!")
+        st.stop()
     api_key = st.text_input("API Key", type="password")
     api_secret = st.text_input("API Secret", type="password")
+else:
+    api_key, api_secret = None, None
 
 # --- Obchodní pár ---
 pair_options = ["BTCUSDT", "BTCUSDC"]
 symbol = st.selectbox("Vyber obchodní pár", pair_options)
-st.write(f"Bot bude obchodovat pár: {symbol}")
 
 # --- Uživatelská nastavení ---
 capital = st.number_input("Startovní kapitál (USDT)", value=50.0, step=1.0)
@@ -31,42 +33,35 @@ tp_percent = st.number_input("Take Profit (%)", value=0.25, step=0.01)
 sl_percent = st.number_input("Stop Loss (%)", value=0.25, step=0.01)
 refresh_interval = st.number_input("Interval refresh (s)", value=5, step=1)
 
-# --- Cesty k CSV ---
+# --- CSV soubory ---
 open_csv = f"open_positions_{symbol}.csv"
 closed_csv = f"closed_positions_{symbol}.csv"
 equity_csv = f"equity_history_{symbol}.csv"
 
-# --- Načtení dat, pokud existují ---
-if os.path.exists(open_csv):
-    open_positions = pd.read_csv(open_csv, parse_dates=['Time'])
-else:
-    open_positions = pd.DataFrame(columns=['Time','Buy Price','Amount'])
+# --- Načtení dat ---
+def load_csv(file, columns):
+    if os.path.exists(file):
+        return pd.read_csv(file, parse_dates=['Time'])
+    else:
+        return pd.DataFrame(columns=columns)
 
-if os.path.exists(closed_csv):
-    closed_positions = pd.read_csv(closed_csv, parse_dates=['Time'])
-else:
-    closed_positions = pd.DataFrame(columns=['Time','Buy Price','Sell Price','Amount','Profit'])
+open_positions = load_csv(open_csv, ['Time','Buy Price','Amount'])
+closed_positions = load_csv(closed_csv, ['Time','Buy Price','Sell Price','Amount','Profit'])
+equity_history = load_csv(equity_csv, ['Time','Equity'])
 
-if os.path.exists(equity_csv):
-    equity_history = pd.read_csv(equity_csv, parse_dates=['Time'])
-else:
-    equity_history = pd.DataFrame(columns=['Time','Equity'])
-
-# --- Demo data ---
-def get_demo_prices(symbol, interval='1m', lookback='1 day'):
-    # Vygeneruje historická data BTC pro demo
-    client = Client()
-    klines = client.get_historical_klines(symbol, interval, lookback)
-    prices = [float(k[4]) for k in klines]  # Close price
+# --- Demo ceny ---
+def get_demo_prices():
+    base_price = 30000
+    prices = [base_price * (1 + np.sin(i/5)/100) for i in range(1000)]
     return prices
 
 if 'demo_prices' not in st.session_state:
-    st.session_state.demo_prices = get_demo_prices(symbol)
+    st.session_state.demo_prices = get_demo_prices()
     st.session_state.price_idx = 0
     st.session_state.last_buy_price = None
     st.session_state.current_capital = capital
 
-# --- Spuštění bota ---
+# --- Aktualizace bota ---
 if st.button("Aktualizovat bot"):
 
     if mode == "Demo":
@@ -86,11 +81,7 @@ if st.button("Aktualizovat bot"):
     if last_buy is None or price <= last_buy * (1 - buy_drop_percent/100):
         amount = st.session_state.current_capital * (investment_percent/100) / price
         st.session_state.last_buy_price = price
-        new_pos = pd.DataFrame([{
-            'Time': pd.Timestamp.now(),
-            'Buy Price': price,
-            'Amount': amount
-        }])
+        new_pos = pd.DataFrame([{'Time': pd.Timestamp.now(), 'Buy Price': price, 'Amount': amount}])
         open_positions = pd.concat([open_positions, new_pos], ignore_index=True)
         st.write(f"Nákup: {amount:.6f} {symbol} za {price:.2f} USDT")
 
