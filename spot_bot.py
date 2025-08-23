@@ -31,7 +31,24 @@ investment_percent = st.number_input("Investice na jednu pozici (% kapitálu)", 
 buy_drop_percent = st.number_input("Pokles ceny pro nákup (%)", value=0.25, step=0.01)
 tp_percent = st.number_input("Take Profit (%)", value=0.25, step=0.01)
 sl_percent = st.number_input("Stop Loss (%)", value=0.25, step=0.01)
+sl_enabled = st.checkbox("Zapnout Stop Loss", value=True)
 refresh_interval = st.number_input("Interval refresh (s)", value=5, step=1)
+
+# --- Tlačítka Start / Stop bota ---
+if 'bot_running' not in st.session_state:
+    st.session_state.bot_running = False
+
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("▶️ Start Bota"):
+        st.session_state.bot_running = True
+with col2:
+    if st.button("⏹ Stop Bota"):
+        st.session_state.bot_running = False
+
+# --- Indikátor stavu bota ---
+status_color = "green" if st.session_state.bot_running else "red"
+st.markdown(f"<div style='font-size:24px;'>● <span style='color:{status_color}'>Bot {'běží' if st.session_state.bot_running else 'stopped'}</span></div>", unsafe_allow_html=True)
 
 # --- CSV soubory ---
 open_csv = f"open_positions_{symbol}.csv"
@@ -61,9 +78,8 @@ if 'demo_prices' not in st.session_state:
     st.session_state.last_buy_price = None
     st.session_state.current_capital = capital
 
-# --- Aktualizace bota ---
-if st.button("Aktualizovat bot"):
-
+# --- Spuštění bota ---
+if st.session_state.bot_running:
     if mode == "Demo":
         price_list = st.session_state.demo_prices
         price_idx = st.session_state.price_idx
@@ -101,7 +117,7 @@ if st.button("Aktualizovat bot"):
             open_positions.drop(idx, inplace=True)
             st.write(f"Prodej (TP): Profit {profit:.2f} USDT")
         # Stop Loss
-        elif price <= row['Buy Price'] * (1 - sl_percent/100):
+        elif sl_enabled and price <= row['Buy Price'] * (1 - sl_percent/100):
             loss = row['Amount'] * (price - row['Buy Price'])
             st.session_state.current_capital += row['Amount']*price
             closed_positions = pd.concat([closed_positions, pd.DataFrame([{
